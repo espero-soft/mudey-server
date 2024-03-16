@@ -1,0 +1,159 @@
+#!/usr/bin/env node
+
+const fs = require('fs');
+const readline = require('readline');
+const path = require('path');
+
+function generateApacheVHost(domain, documentRoot, routing, cache) {
+    let serverName = `${domain}`;
+    if (!domain.startsWith('www.')) {
+        serverName += `\n    ServerAlias www.${domain}`;
+    } else {
+        serverName += `\n    ServerAlias ${domain.substr(4)}`;
+    }
+
+    let vHostContent = `
+<VirtualHost *:80>
+    ServerName ${serverName}
+    DocumentRoot ${documentRoot}
+
+    ErrorLog \${APACHE_LOG_DIR}/${domain}_error.log
+    CustomLog \${APACHE_LOG_DIR}/${domain}_access.log combined
+
+    ${routing ? `
+    <Directory ${documentRoot}>
+        Options Indexes FollowSymLinks MultiViews
+        AllowOverride All
+        Require all granted
+    </Directory>
+    ` : ''}
+
+    ${cache ? `
+    <IfModule mod_expires.c>
+        ExpiresActive On
+        ExpiresDefault "access plus 1 month"
+    </IfModule>
+    ` : ''}
+</VirtualHost>
+`;
+    return vHostContent;
+}
+
+function generateNginxVHost(domain, documentRoot, routing, cache) {
+    let serverName = `${domain}`;
+    if (!domain.startsWith('www.')) {
+        serverName += `\n    server_name www.${domain}`;
+    }
+
+    let vHostContent = `
+server {
+    listen 80;
+    server_name ${serverName};
+
+    location / {
+        root ${documentRoot};
+        index index.html index.htm;
+        ${routing ? 'try_files $uri $uri/ /index.html;' : ''}
+    }
+
+    error_log /var/log/nginx/${domain}_error.log;
+    access_log /var/log/nginx/${domain}_access.log;
+
+    ${cache ? `
+    location ~* \.(?:ico|css|js|gif|jpe?g|png|pdf)$ {
+        expires 1M;
+        access_log off;
+        add_header Cache-Control "public";
+    }
+    ` : ''}
+}
+`;
+    return vHostContent;
+}
+
+function printHelp() {
+    console.log('Usage: node generate-vhost.js [options]');
+    console.log('Options:');
+    console.log('--apache\tGenerate Apache virtual host configuration');
+    console.log('--nginx\tGenerate Nginx virtual host configuration');
+    console.log('--routing\tEnable routing (for single-page applications)');
+    console.log('--cache\tEnable caching');
+}
+
+const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+});
+
+if (process.argv.includes('--help') || process.argv.includes('-h')) {
+    printHelp();
+    rl.close();
+} else {
+    let webServer = '';
+    let routing = false;
+    let cache = false;
+
+    if (process.argv.includes('--apache')) {
+        webServer = 'apache';
+    } else if (process.argv.includes('--nginx')) {
+        webServer = 'nginx';
+    } else {
+        console.log('Please specify the web server option (--apache or --nginx).');
+        rl.close();
+    }
+
+    if (process.argv.includes('--routing')) {
+        routing = true;
+    }
+
+    if (process.argv.includes('--cache')) {
+        cache = true;
+    }
+
+    rl.question('Enter domain name: ', (domain) => {
+        rl.question('Enter document root: ', (documentRoot) => {
+            let vHostContent = '';
+
+            if (webServer === 'apache') {
+                vHostContent = generateApacheVHost(domain, documentRoot, routing, cache);
+                const apacheConfigDir = path.join('/etc/apache2/sites-available', domain);
+                fs.mkdir(apacheConfigDir, { recursive: true }, (err) => {
+                    if (err) {
+                        console.error('Error creating Apache virtual host directory:', err);
+                        rl.close();
+                    } else {
+                        fs.writeFile(path.join(apacheConfigDir, `${domain}.conf`), vHostContent, (err) => {
+                            if (err) {
+                                console.error('Error writing Apache virtual host file:', err);
+                            } else {
+                                console.log('Apache virtual host file created successfully!');
+                            }
+                            rl.close();
+                        });
+                    }
+                });
+            } else if (webServer === 'nginx') {
+                vHostContent = generateNginxVHost(domain, documentRoot, routing, cache);
+                const nginxConfigDir = path.join('/etc/nginx/sites-available', domain);
+                fs.mkdir(nginxConfigDir, { recursive: true }, (err) => {
+                    if (err) {
+                        console.error('Error creating Nginx virtual host directory:', err);
+                        rl.close();
+                    } else {
+                        fs.writeFile(path.join(nginxConfigDir, `${domain}.conf`), vHostContent, (err) => {
+                            if (err) {
+                                console.error('Error writing Nginx virtual host file:', err);
+                            } else {
+                                console.log('Nginx virtual host file created successfully!');
+                            }
+                            rl.close();
+                        });
+                    }
+                });
+            } else {
+                console.log('Invalid web server specified.');
+                rl.close();
+            }
+        });
+    });
+}
